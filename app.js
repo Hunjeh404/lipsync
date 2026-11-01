@@ -26,7 +26,7 @@ const S = {
   chars: [],           // chars/chars.json
   sel: 'lyr',
   L: {
-    lyr: { ax: .5, ay: 1, mx: 80, my: 120, size: 72, mode: 1, font: '', st: defStyle() },
+    lyr: { ax: .5, ay: 1, mx: 80, my: 120, size: 72, bw: .8, font: '', st: defStyle() },
     chr: { id: 'cat', ax: .5, ay: .5, mx: 80, my: 80, size: .62, blink: true, sens: 1, adj: {} },      // size = 캐릭터 키(화면 높이 대비), adj = 캐릭터별 입 위치·크기 조정
   },
   fonts: [],           // { family, name }
@@ -308,16 +308,27 @@ function draw(g, t, edit) {
   return boxes;
 }
 
-// 가사 그리기: 한 줄(지금), 두 줄(지금+다음), 세 줄(이전+지금+다음). 이어지는 줄로 바뀔 때의 전환은 L.anim
+// 자막 그리기: 지금 줄 하나만, 자막 상자 폭(L.bw, 화면 너비 대비)에 맞춰 줄바꿈한다. 이어지는 줄로 바뀔 때의 전환은 L.anim
 const linked = i => i >= 0 && !!S.cues[i]?.text && S.cues[i].start != null && !!S.cues[i + 1]?.text && S.cues[i + 1].start != null && !gapAfter(i);      // i 줄과 다음 줄이 빈 시간 없이 이어지는가
-const ADUR = { fade: .3, cross: .3, float: .3, scroll: .18 };      // 전환에 걸리는 기본 시간(초). 사라지기는 사라졌다 나타나기까지 합친 시간
+const ADUR = { fade: .3, cross: .3, float: .3 };      // 전환에 걸리는 기본 시간(초). 사라지기는 사라졌다 나타나기까지 합친 시간
 const adurOf = (L, an) => L.adur?.[an] ?? ADUR[an] ?? .3;
-const animOf = L => { const a = L.anim ?? (L.mode === 3 ? 'scroll' : 'fade'); return a === 'scroll' && L.mode === 1 ? 'fade' : a; };
-let lyrWk = '', lyrWv = 0;
-function lyrW(L) {      // 가사 상자 폭은 곡 전체 가사 중 가장 긴 줄에 맞춰 고정한다(정렬·전환 중에 상자가 흔들리지 않게)
-  const key = [L.font, L.size, JSON.stringify(L.st), ...S.cues.map(c => c.text)].join('\u0001');
-  if (key !== lyrWk) { lyrWk = key; lyrWv = Math.max(1, ...S.cues.filter(c => c.text).map(c => textSprite(c.text, L.font, L.size, L.st).w)); }
-  return lyrWv;
+const animOf = L => { const a = L.anim ?? 'fade'; return a === 'scroll' ? 'fade' : a; };
+function wrapLines(text, font, size, maxW) {      // 띄어쓰기 단위로 줄을 나누고, 한 단어가 폭보다 길면 글자 단위로 나눈다
+  mctx.font = fontCss(font, size); const fits = t => mctx.measureText(t).width <= maxW, out = []; let line = '';
+  for (const word of text.trim().split(/\s+/)) {
+    if (fits(line ? line + ' ' + word : word)) { line = line ? line + ' ' + word : word; continue; }
+    if (line) out.push(line); line = '';
+    for (const ch of word) { if (line && !fits(line + ch)) { out.push(line); line = ''; } line += ch; }
+  }
+  if (line) out.push(line); return out;
+}
+function wrapSprite(text, L, bw) {
+  const key = ['w', text, L.font, L.size, bw, L.ta ?? L.ax, L.lh ?? .16, JSON.stringify(L.st)].join('\u0001');
+  let s = sprites.get(key); if (s) return s;
+  const lines = wrapLines(text, L.font, L.size, bw), parts = lines.map(l => textSprite(l, L.font, L.size, L.st)), pad = parts[0]?.pad ?? 0, gap = L.size * (L.lh ?? .16);
+  const h = parts.reduce((a, q) => a + q.h, 0) + gap * Math.max(0, parts.length - 1), B = mk(bw + pad * 2, h + pad * 2), g = B.getContext('2d');
+  let y = 0; for (const q of parts) { g.drawImage(q.c, (bw - q.w) * (L.ta ?? L.ax), y); y += q.h + gap; }      // 줄마다 이미 효과를 입힌 그림을 정렬에 맞춰 쌓는다
+  s = { c: B, pad, w: bw, h }; sprites.set(key, s); return s;
 }
 let lyrMoving = false, blurC = null;
 function blurLyrics(g, t) {      // 영상 만들 때만: 줄이 움직이는 동안은 한 장면 시간(1/30초) 안의 여러 순간을 겹쳐 그려 움직임을 부드럽게(모션 블러)
@@ -330,7 +341,7 @@ function blurLyrics(g, t) {      // 영상 만들 때만: 줄이 움직이는 �
   ag.globalCompositeOperation = 'source-over'; ag.globalAlpha = 1; g.drawImage(acc, 0, 0); return b;
 }
 function drawLyrics(g, t, i, edit) {
-  const L = S.L.lyr, an = animOf(L), m = L.mode || 1; let alpha = 1, p = 0;
+  const L = S.L.lyr, an = animOf(L); let alpha = 1, p = 0;
   if (i >= 0) {
     const c = S.cues[i], fin = clamp((t - c.start) / .15, 0, 1), fout = clamp((endOf(i) - t) / .15, 0, 1), hf = adurOf(L, 'fade') / 2;
     if (an === 'fade') alpha = clamp((t - c.start) / hf, 0, 1) * clamp((endOf(i) - t) / hf, 0, 1);                       // 줄이 바뀔 때마다 잠깐 사라졌다 나타남
@@ -341,27 +352,10 @@ function drawLyrics(g, t, i, edit) {
     }
   } else if (edit) i = S.cues.findIndex(c => c.text);
   if (i < 0 || !S.cues[i].text) return null;
-  const k = .72, hM = textSprite('가', L.font, L.size, L.st).h, hS = hM * k, gap = L.size * (L.lh ?? .16);
-  // 자리마다 윗선·배율·투명도. c0 이 지금 줄 자리, 양 끝은 위로 사라지거나 아래에서 나타나는 자리
-  const lay = m === 3 ? { top: [-gap - hS, 0, hS + gap, hS + gap + hM + gap, 2 * hS + 3 * gap + hM], scl: [k, k, 1, k, k], alp: [0, .45, 1, .45, 0], c0: 2, hgt: 2 * hS + 2 * gap + hM, ds: [-1, 0, 1, 2] }
-    : m === 2 ? { top: [-gap - hM, 0, hM + gap, hM + 2 * gap + hS], scl: [1, 1, k, k], alp: [0, 1, .45, 0], c0: 1, hgt: hM + gap + hS, ds: [0, 1, 2] }
-    : { top: [-gap - hM, 0, hM + gap], scl: [1, 1, 1], alp: [0, 1, 0], c0: 1, hgt: hM, ds: [0, 1] };
-  const lerp = (arr, x) => { const a = Math.floor(x), f = x - a, n = arr.length - 1; return arr[clamp(a, 0, n)] * (1 - f) + arr[clamp(a + 1, 0, n)] * f; };
-  const state = (ci, shift) => {      // ci 줄을 지금 줄로 둔 모습. shift 만큼 위로 밀린 상태
-    const show = d => d === 0 || (d === -1 ? linked(ci - 1) : d === 1 ? linked(ci) : linked(ci) && linked(ci + 1));
-    return lay.ds.filter(d => show(d) && S.cues[ci + d]?.text).map(d => { const x = lay.c0 + d - shift, s = lerp(lay.scl, x);
-      const a = s === k ? textSprite(S.cues[ci + d].text, L.font, Math.round(L.size * k), L.st) : textSprite(S.cues[ci + d].text, L.font, L.size, L.st), r = s === k ? 1 : s;      // 작은 줄은 작은 글자로 따로 그려 테두리 굵기를 지금과 같게
-      return { a, r, x, y: lerp(lay.top, x), al: lerp(lay.alp, x) }; });
-  };
-  let parts;
-  if (an === 'scroll') parts = [{ L: state(i, p), dy: 0, al: 1 }];
-  else if ((an === 'cross' || an === 'float') && p > 0) { const f = an === 'float' ? hM * .3 : 0; parts = [{ L: state(i, 0), dy: -f * p, al: 1 - p }, { L: state(i + 1, 0), dy: f * (1 - p), al: p }]; }
-  else parts = [{ L: state(i, 0), dy: 0, al: 1 }];
-  const b = place(L, lyrW(L), lay.hgt); if (!g) return b;
-  for (const P of parts) {
-    P.L.sort((u, v) => Math.abs(v.x - lay.c0) - Math.abs(u.x - lay.c0));      // 지금 줄 자리에 가까운 줄을 나중에(위에) 그린다
-    for (const o of P.L) { const r = o.r; g.globalAlpha = alpha * P.al * o.al; g.drawImage(o.a.c, alignX(L, b, o.a.w * r) - o.a.pad * r, b.y + o.y + P.dy - o.a.pad * r, o.a.c.width * r, o.a.c.height * r); }
-  }
+  const bw = Math.round(W * (L.bw ?? .8)), cur = wrapSprite(S.cues[i].text, L, bw), b = place(L, bw, cur.h); if (!g) return b;
+  const put = (s, dy, a) => { const q = place(L, bw, s.h); g.globalAlpha = alpha * a; g.drawImage(s.c, q.x - s.pad, q.y + dy - s.pad); };
+  if ((an === 'cross' || an === 'float') && p > 0) { const f = an === 'float' ? L.size * .35 : 0; put(cur, -f * p, 1 - p); put(wrapSprite(S.cues[i + 1].text, L, bw), f * (1 - p), p); }
+  else put(cur, 0, 1);
   g.globalAlpha = 1; return b;
 }
 
@@ -575,9 +569,8 @@ function buildPanel() {
     return;
   }
 
-  if (S.sel === 'lyr') P.append(head('표시'), row('줄 수',
-    ...[[1, '한 줄'], [2, '두 줄'], [3, '세 줄']].map(([v, t]) => { const b = el('button', { className: 'seg' + (L.mode === v ? ' on' : ''), textContent: t }); b.onclick = () => { L.mode = v; buildPanel(); }; return b; })),
-    row('전환', el('div', { className: 'segs' }, ...[['none', '없음'], ['fade', '사라지기'], ['cross', '교차'], ['float', '떠오르기'], ['scroll', '스크롤']].filter(([v]) => v !== 'scroll' || L.mode > 1).map(([v, t]) => { const b = el('button', { className: 'seg' + (animOf(L) === v ? ' on' : ''), textContent: t }); b.onclick = () => { L.anim = v; buildPanel(); }; return b; }))));
+  if (S.sel === 'lyr') P.append(head('표시'),
+    row('전환', el('div', { className: 'segs' }, ...[['none', '없음'], ['fade', '사라지기'], ['cross', '교차'], ['float', '떠오르기']].map(([v, t]) => { const b = el('button', { className: 'seg' + (animOf(L) === v ? ' on' : ''), textContent: t }); b.onclick = () => { L.anim = v; buildPanel(); }; return b; }))));
   if (S.sel === 'lyr' && animOf(L) !== 'none') {      // 지금 고른 전환의 시간
     const an = animOf(L), A = L.adur ??= {}; A[an] ??= ADUR[an]; const r = range(A, an, .05, 1, .01), v = el('span', { className: 'hint', textContent: A[an].toFixed(2) + '초' });
     r.addEventListener('input', () => v.textContent = A[an].toFixed(2) + '초'); P.append(row('전환 시간', r, v));
@@ -607,10 +600,11 @@ function buildPanel() {
       row('', el('button', { className: 'mini wide', textContent: '입 처음 상태로', onclick: () => { L.adj[L.id] = { dx: 0, dy: 0, k: 1 }; buildPanel(); } })));
     return;
   }
-  {      // 정렬과 줄 간격(줄 간격은 두 줄 이상일 때)
+  {      // 정렬, 줄바꿈한 줄 사이 간격, 자막 폭
     const ta = L.ta ?? L.ax, d = .16; L.lh ??= d;      // 줄 간격은 기본값이 조절바 가운데: 줄이거나 늘린다
     P.append(head('정렬'), row('정렬', ...[[0, '왼쪽'], [.5, '가운데'], [1, '오른쪽']].map(([v, t]) => { const b = el('button', { className: 'seg' + (ta === v ? ' on' : ''), textContent: t }); b.onclick = () => { L.ta = v; buildPanel(); }; return b; })));
-    if (L.mode > 1) P.append(row('줄 간격', range(L, 'lh', d - .6, d + .6, .01)));
+    L.bw ??= .8; const bwR = range(L, 'bw', .2, 1, .01), bwV = el('span', { className: 'hint', textContent: Math.round(L.bw * 100) + '%' }); bwR.addEventListener('input', () => bwV.textContent = Math.round(L.bw * 100) + '%');
+    P.append(row('줄 간격', range(L, 'lh', d - .6, d + .6, .01)), row('자막 폭', bwR, bwV), el('p', { className: 'hint', textContent: '자막은 늘 한 줄(지금 줄)만 보이고, 자막 폭보다 길면 띄어쓰기에서 줄을 바꿉니다. 자막 폭은 화면 너비에 대한 비율입니다.' }));
   }
 
   {      // 글꼴: 각 글꼴로 쓴 예시를 보고 고른다
