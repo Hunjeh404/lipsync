@@ -17,6 +17,7 @@ const S = {
   lang: 'korean',      // 음성인식 언어
   audioFile: null, dur: 0,
   bg: null, bgImg: null, bgT: { zoom: 1, dx: 0, dy: 0 },   // 배경: 화면 크기로 그려 둔 캔버스 / 원본 / 보일 부분
+  bgMode: 'color', bgColor: '#1a1816',      // 배경: 이미지('image') 또는 단색('color')
   bgFill: '#000000', bgFillMode: 'color',   // 배경 이미지가 화면을 다 못 채울 때 빈 곳: 단색('color') 또는 같은 그림을 흐리게('blur')
   ratio: '16:9',
   fmt: 'mp4',          // 'mov' = 소리 원본 그대로 / 'mp4' = 어디서나 재생되도록 소리를 AAC로 압축
@@ -26,7 +27,7 @@ const S = {
   chars: [],           // chars/chars.json
   sel: 'lyr',
   L: {
-    lyr: { ax: .5, ay: 1, mx: 80, my: 120, size: 72, bw: .8, font: '', st: defStyle() },
+    lyr: { ax: .5, ay: 1, mx: 80, my: 120, size: 72, bw: .8, bh: .16, font: '', st: defStyle() },      // bw·bh = 자막 상자 폭·높이(화면 대비)
     chr: { id: 'cat', ax: .5, ay: .5, mx: 80, my: 80, size: .62, blink: true, sens: 1, adj: {} },      // size = 캐릭터 키(화면 높이 대비), adj = 캐릭터별 입 위치·크기 조정
   },
   fonts: [],           // { family, name }
@@ -117,7 +118,7 @@ function drawChars() {
 addEventListener('keydown', e => {
   if (e.target.matches('input, textarea, select')) return;
   if (e.code === 'Enter') { e.preventDefault(); $('#play').click(); }
-  else if (step === 3 && S.sel === 'bg' && S.bgImg && e.code.startsWith('Arrow')) { e.preventDefault(); nudgeBg(e.code === 'ArrowLeft' ? -1 : e.code === 'ArrowRight' ? 1 : 0, e.code === 'ArrowUp' ? -1 : e.code === 'ArrowDown' ? 1 : 0); }
+  else if (step === 3 && S.sel === 'bg' && S.bgImg && S.bgMode === 'image' && e.code.startsWith('Arrow')) { e.preventDefault(); nudgeBg(e.code === 'ArrowLeft' ? -1 : e.code === 'ArrowRight' ? 1 : 0, e.code === 'ArrowUp' ? -1 : e.code === 'ArrowDown' ? 1 : 0); }
   else if (e.code === 'ArrowLeft') audio.currentTime = Math.max(0, audio.currentTime - 3);
   else if (e.code === 'ArrowRight') audio.currentTime += 3;
 });
@@ -299,8 +300,7 @@ function drawChar(g, t, edit) {
 // 한 장면 그리기. edit=true 이면 가사가 없는 순간에도 첫 줄을 보여 줘서 꾸미기 쉽게 한다(멈춰 있을 때만 그렇게 부른다)
 function draw(g, t, edit) {
   const boxes = {};
-  if (S.bg) g.drawImage(S.bg, 0, 0); else { g.fillStyle = '#1a1816'; g.fillRect(0, 0, W, H); }
-  if (S.bgVid && S.vidImg) drawVidBg(g, S.vidImg);
+  if (S.bgMode === 'image' && S.bg) { g.drawImage(S.bg, 0, 0); if (S.bgVid && S.vidImg) drawVidBg(g, S.vidImg); } else { g.fillStyle = S.bgColor; g.fillRect(0, 0, W, H); }
 
   const cb = drawChar(g, t, edit); if (cb) boxes.chr = cb;
 
@@ -322,11 +322,16 @@ function wrapLines(text, font, size, maxW) {      // 띄어쓰기 단위로 줄�
   }
   if (line) out.push(line); return out;
 }
-function wrapSprite(text, L, bw) {
-  const key = ['w', text, L.font, L.size, bw, L.ta ?? L.ax, L.lh ?? .16, JSON.stringify(L.st)].join('\u0001');
+function wrapSprite(text, L, bw, bh) {      // 상자 폭에서 줄을 바꾸고, 상자 높이를 넘치면 글자를 줄여 맞춘다
+  const key = ['w', text, L.font, L.size, bw, bh, L.ta ?? L.ax, L.lh ?? .16, JSON.stringify(L.st)].join('\u0001');
   let s = sprites.get(key); if (s) return s;
-  const lines = wrapLines(text, L.font, L.size, bw), parts = lines.map(l => textSprite(l, L.font, L.size, L.st)), pad = parts[0]?.pad ?? 0, gap = L.size * (L.lh ?? .16);
-  const h = parts.reduce((a, q) => a + q.h, 0) + gap * Math.max(0, parts.length - 1), B = mk(bw + pad * 2, h + pad * 2), g = B.getContext('2d');
+  let size = L.size, parts, gap, h;
+  for (;;) {
+    parts = wrapLines(text, L.font, size, bw).map(l => textSprite(l, L.font, size, L.st)); gap = size * (L.lh ?? .16);
+    h = parts.reduce((a, q) => a + q.h, 0) + gap * Math.max(0, parts.length - 1);
+    if (h <= bh || size <= 12) break; size = Math.max(12, Math.floor(size * .94));
+  }
+  const pad = parts[0]?.pad ?? 0, B = mk(bw + pad * 2, h + pad * 2), g = B.getContext('2d');
   let y = 0; for (const q of parts) { g.drawImage(q.c, (bw - q.w) * (L.ta ?? L.ax), y); y += q.h + gap; }      // 줄마다 이미 효과를 입힌 그림을 정렬에 맞춰 쌓는다
   s = { c: B, pad, w: bw, h }; sprites.set(key, s); return s;
 }
@@ -352,9 +357,10 @@ function drawLyrics(g, t, i, edit) {
     }
   } else if (edit) i = S.cues.findIndex(c => c.text);
   if (i < 0 || !S.cues[i].text) return null;
-  const bw = Math.round(W * (L.bw ?? .8)), cur = wrapSprite(S.cues[i].text, L, bw), b = place(L, bw, cur.h); if (!g) return b;
-  const put = (s, dy, a) => { const q = place(L, bw, s.h); g.globalAlpha = alpha * a; g.drawImage(s.c, q.x - s.pad, q.y + dy - s.pad); };
-  if ((an === 'cross' || an === 'float') && p > 0) { const f = an === 'float' ? L.size * .35 : 0; put(cur, -f * p, 1 - p); put(wrapSprite(S.cues[i + 1].text, L, bw), f * (1 - p), p); }
+  const bw = Math.round(W * (L.bw ?? .8)), bh = Math.round(H * (L.bh ?? .16)), b = place(L, bw, bh); if (!g) return b;      // 글자는 상자 안 세로 가운데
+  const put = (s, dy, a) => { g.globalAlpha = alpha * a; g.drawImage(s.c, b.x - s.pad, b.y + (bh - s.h) / 2 + dy - s.pad); };
+  const cur = wrapSprite(S.cues[i].text, L, bw, bh);
+  if ((an === 'cross' || an === 'float') && p > 0) { const f = an === 'float' ? L.size * .35 : 0; put(cur, -f * p, 1 - p); put(wrapSprite(S.cues[i + 1].text, L, bw, bh), f * (1 - p), p); }
   else put(cur, 0, 1);
   g.globalAlpha = 1; return b;
 }
@@ -473,7 +479,7 @@ $('#fBg').onchange = async e => {
   stopVids(); S.bgVid = null;
   const f = fs[0];
   S.bgImg = S.bgSrc = await createImageBitmap(f); S.bgUp = 1; S.bgFile = f.name; S.bgT = { zoom: 1, dx: 0, dy: 0 }; rebuildBg();
-  $('#bgName').textContent = `${f.name} (${S.bgImg.width}x${S.bgImg.height})`; if (S.sel === 'bg') buildPanel();
+  S.bgMode = 'image'; $('#bgName').textContent = `${f.name} (${S.bgImg.width}x${S.bgImg.height})`; if (S.sel === 'bg') buildPanel();
 };
 
 /* ---------- 배경 영상: 10초 이하 루프 영상 1~2개를 이어 붙여 반복. 노래 0초 = 영상 0초 ---------- */
@@ -490,7 +496,7 @@ async function loadBgVideos(fs) {
   const v0 = clips[0].el; if (v0.currentTime > 0) { v0.currentTime = 0; await new Promise(r => v0.onseeked = r); }
   stopVids(); S.bgVid = { clips, total: clips.reduce((s, c) => s + c.dur, 0) }; S.vidImg = null;
   S.bgImg = S.bgSrc = await createImageBitmap(v0); S.bgUp = 1; S.bgFile = clips[0].file.name; S.bgT = { zoom: 1, dx: 0, dy: 0 }; rebuildBg();      // 첫 영상의 첫 장면: 위치 맞추기와 흐린 채우기에 쓴다
-  $('#bgName').textContent = clips.map(c => `${c.file.name} (${c.w}x${c.h}, ${c.dur.toFixed(1)}초)`).join(' + '); if (S.sel === 'bg') buildPanel();
+  S.bgMode = 'image'; $('#bgName').textContent = clips.map(c => `${c.file.name} (${c.w}x${c.h}, ${c.dur.toFixed(1)}초)`).join(' + '); if (S.sel === 'bg') buildPanel();
 }
 function stopVids() { S.bgVid?.clips.forEach(c => { c.el.pause(); URL.revokeObjectURL(c.el.src); }); }
 const clipAt = t => { const V = S.bgVid; let x = ((t % V.total) + V.total) % V.total; return x < V.clips[0].dur || V.clips.length < 2 ? [0, Math.min(x, V.clips[0].dur)] : [1, x - V.clips[0].dur]; };
@@ -546,7 +552,9 @@ function buildPanel() {
     const rb = el('div', { className: 'ratios' });
     for (const [name] of RATIOS) { const b = el('button', { className: 'seg' + (S.ratio === name ? ' on' : ''), textContent: name }); b.onclick = () => { setRatio(name); buildPanel(); }; rb.append(b); }
     P.append(head('화면 비율'), rb); rb.scrollLeft = rb.querySelector('.on').offsetLeft - 8;      // 좁은 화면에서는 한 줄을 좌우로 민다: 고른 비율이 보이게
-    P.append(el('p', { className: 'hint', textContent: `지금 ${W}x${H}. 짧은 변이 1440이 되도록 맞춥니다.` }), head('배경 이미지'));
+    P.append(el('p', { className: 'hint', textContent: `지금 ${W}x${H}. 짧은 변이 1440이 되도록 맞춥니다.` }), head('배경'),
+      row('종류', ...[['image', '이미지'], ['color', '단색']].map(([v, t]) => { const b = el('button', { className: 'seg' + (S.bgMode === v ? ' on' : ''), textContent: t }); b.onclick = () => { S.bgMode = v; buildPanel(); }; return b; })));
+    if (S.bgMode === 'color') { P.append(row('색', colorBtn(() => S.bgColor, v => S.bgColor = v))); return; }
     if (!S.bgImg) { P.append(el('p', { className: 'hint', textContent: '화면 아래에서 배경 이미지를 넣으세요.' })); return; }
     const T = S.bgT, bmp = S.bgImg, cover = Math.max(W / bmp.width, H / bmp.height);
     const fits = [['가로 맞춤', W / bmp.width / cover], ['세로 맞춤', H / bmp.height / cover], ['원본 크기', 1 / cover / (S.bgUp || 1)]];
@@ -589,7 +597,7 @@ function buildPanel() {
 
   // 크기
   const sz = S.sel === 'chr' ? [range(L, 'size', .1, 1.5, .01)] : [range(L, 'size', 20, 240, 1)]; sz[0].id = 'sizeI';
-  P.append(head('크기'), row(S.sel === 'chr' ? '키' : '글자 크기', ...sz), el('p', { className: 'hint', textContent: S.sel === 'chr' ? '키는 화면 높이에 대한 비율입니다. 화면에서 모서리 네모를 끌어도 됩니다.' : '화면에서 모서리 네모를 끌어도 됩니다.' }));
+  P.append(head('크기'), row(S.sel === 'chr' ? '키' : '글자 크기', ...sz), el('p', { className: 'hint', textContent: S.sel === 'chr' ? '키는 화면 높이에 대한 비율입니다. 화면에서 모서리 네모를 끌어도 됩니다.' : '자막이 상자 높이를 넘치면 이보다 작게 줄어듭니다.' }));
   if (S.sel === 'chr') {      // 입 자리와 크기는 캐릭터마다 따로 기억한다
     const A = L.adj[L.id] ??= { dx: 0, dy: 0, k: 1 }; A.dx ??= 0; A.dy ??= 0; A.k ??= 1;
     const step1 = (key, d) => el('button', { className: 'mini', innerHTML: ICON[d], onclick: () => { A[key] += (d === 'left' || d === 'up') ? -1 : 1; buildPanel(); } });
@@ -603,8 +611,10 @@ function buildPanel() {
   {      // 정렬, 줄바꿈한 줄 사이 간격, 자막 폭
     const ta = L.ta ?? L.ax, d = .16; L.lh ??= d;      // 줄 간격은 기본값이 조절바 가운데: 줄이거나 늘린다
     P.append(head('정렬'), row('정렬', ...[[0, '왼쪽'], [.5, '가운데'], [1, '오른쪽']].map(([v, t]) => { const b = el('button', { className: 'seg' + (ta === v ? ' on' : ''), textContent: t }); b.onclick = () => { L.ta = v; buildPanel(); }; return b; })));
-    L.bw ??= .8; const bwR = range(L, 'bw', .2, 1, .01), bwV = el('span', { className: 'hint', textContent: Math.round(L.bw * 100) + '%' }); bwR.addEventListener('input', () => bwV.textContent = Math.round(L.bw * 100) + '%');
-    P.append(row('줄 간격', range(L, 'lh', d - .6, d + .6, .01)), row('자막 폭', bwR, bwV), el('p', { className: 'hint', textContent: '자막은 늘 한 줄(지금 줄)만 보이고, 자막 폭보다 길면 띄어쓰기에서 줄을 바꿉니다. 자막 폭은 화면 너비에 대한 비율입니다.' }));
+    L.bw ??= .8; L.bh ??= .16;
+    const pct = (key, min) => { const r = range(L, key, min, 1, .005); r.id = key + 'I'; const v = el('span', { className: 'hint', id: key + 'V', textContent: Math.round(L[key] * 100) + '%' }); r.addEventListener('input', () => v.textContent = Math.round(L[key] * 100) + '%'); return [r, v]; };
+    P.append(row('줄 간격', range(L, 'lh', d - .6, d + .6, .01)), row('상자 폭', ...pct('bw', .1)), row('상자 높이', ...pct('bh', .03)),
+      el('p', { className: 'hint', textContent: '자막은 늘 지금 줄 하나만 보입니다. 상자 폭보다 길면 띄어쓰기에서 줄을 바꾸고, 상자 높이를 넘치면 글자를 줄여 맞춥니다. 폭·높이는 화면 대비 비율이고, 화면에서 모서리 네모를 끌면 비율 고정 없이 바뀝니다.' }));
   }
 
   {      // 글꼴: 각 글꼴로 쓴 예시를 보고 고른다
@@ -632,8 +642,9 @@ const toCv = e => { const r = cv.getBoundingClientRect(); return { x: (e.clientX
 let dragging = null;
 stage.onpointerdown = e => {
   const p = toCv(e);
-  if (S.sel === 'bg') { if (!S.bgImg) return; dragging = { mode: 'bg', px: p.x, py: p.y, dx: S.bgT.dx, dy: S.bgT.dy }; stage.setPointerCapture(e.pointerId); return e.preventDefault(); }
-  if (e.target.id === 'handle' && S.boxes[S.sel]) { const b = S.boxes[S.sel], c = { x: b.x + b.w / 2, y: b.y + b.h / 2 }; dragging = { mode: 'size', c, d0: Math.hypot(p.x - c.x, p.y - c.y) || 1, s0: S.L[S.sel].size }; }
+  if (S.sel === 'bg') { if (!S.bgImg || S.bgMode !== 'image') return; dragging = { mode: 'bg', px: p.x, py: p.y, dx: S.bgT.dx, dy: S.bgT.dy }; stage.setPointerCapture(e.pointerId); return e.preventDefault(); }
+  if (e.target.id === 'handle' && S.sel === 'lyr' && S.boxes.lyr) { const L = S.L.lyr; dragging = { mode: 'box', px: p.x, py: p.y, w0: L.bw * W, h0: L.bh * H }; }      // 자막 상자: 폭과 높이를 따로
+  else if (e.target.id === 'handle' && S.boxes[S.sel]) { const b = S.boxes[S.sel], c = { x: b.x + b.w / 2, y: b.y + b.h / 2 }; dragging = { mode: 'size', c, d0: Math.hypot(p.x - c.x, p.y - c.y) || 1, s0: S.L[S.sel].size }; }
   else {
     const hit = [S.sel, 'lyr', 'chr'].find(k => { const b = S.boxes[k]; return b && p.x >= b.x && p.x <= b.x + b.w && p.y >= b.y && p.y <= b.y + b.h; });
     if (!hit) return; if (hit !== S.sel) { S.sel = hit; buildPanel(); }
@@ -650,6 +661,10 @@ stage.onpointermove = e => {
     return rebuildBg();
   }
   const p = toCv(e), L = S.L[S.sel], b = S.boxes[S.sel]; if (!b) return;
+  if (dragging.mode === 'box') {      // 가운데 정렬이면 양쪽으로 늘어나므로 두 배로
+    L.bw = clamp((dragging.w0 + (p.x - dragging.px) * (L.ax === .5 ? 2 : 1)) / W, .1, 1); L.bh = clamp((dragging.h0 + (p.y - dragging.py) * (L.ay === .5 ? 2 : 1)) / H, .03, 1);
+    for (const k of ['bw', 'bh']) { if ($(`#${k}I`)) $(`#${k}I`).value = L[k]; if ($(`#${k}V`)) $(`#${k}V`).textContent = Math.round(L[k] * 100) + '%'; } return;
+  }
   if (dragging.mode === 'size') { const f = Math.hypot(p.x - dragging.c.x, p.y - dragging.c.y) / dragging.d0; L.size = S.sel === 'chr' ? clamp(+(dragging.s0 * f).toFixed(2), .1, 1.5) : clamp(Math.round(dragging.s0 * f), 20, 240); if ($('#sizeI')) $('#sizeI').value = L.size; return; }
   const nx = p.x - dragging.ox, ny = p.y - dragging.oy, SNAP = 36;
   if (Math.abs(nx + b.w / 2 - W / 2) < SNAP) L.ax = .5; else if (nx + b.w / 2 < W / 2) { L.ax = 0; L.mx = Math.max(0, Math.round(nx)); } else { L.ax = 1; L.mx = Math.max(0, Math.round(W - nx - b.w)); }
@@ -852,7 +867,7 @@ const STYLE_KEY = 'lipsync-style';
 function collect(full) {      // full=true 는 작업 전체(대본·시점 포함), false 는 꾸밈만(내 스타일)
   const L = JSON.parse(JSON.stringify(S.L));
   L.lyr.font = S.fonts.find(f => f.family === S.L.lyr.font)?.name ?? S.wantFont?.lyr ?? '';
-  const o = { app: 'lipsync', v: 1, ratio: S.ratio, fmt: S.fmt, lang: S.lang, bgFill: S.bgFill, bgFillMode: S.bgFillMode, fx: { ...S.fx }, L };
+  const o = { app: 'lipsync', v: 1, ratio: S.ratio, fmt: S.fmt, lang: S.lang, bgMode: S.bgMode, bgColor: S.bgColor, bgFill: S.bgFill, bgFillMode: S.bgFillMode, fx: { ...S.fx }, L };
   if (!full) return o;
   return { ...o, script: $('#lyrics').value, cues: S.cues, crop: { ...S.crop }, bgT: { ...S.bgT } };
 }
@@ -862,7 +877,7 @@ async function applyState(o) {
   if (o.L?.chr) Object.assign(S.L.chr, o.L.chr, { adj: { ...S.L.chr.adj, ...o.L.chr.adj } });
   S.wantFont = { lyr: o.L?.lyr?.font || '' };
   { const f = S.fonts.find(f => f.name === S.wantFont.lyr); if (f) S.L.lyr.font = f.family; }
-  if (o.fx) Object.assign(S.fx, o.fx); if (o.fmt) S.fmt = o.fmt; if (o.lang) S.lang = o.lang; if (o.bgFill) S.bgFill = o.bgFill; if (o.bgFillMode) S.bgFillMode = o.bgFillMode;
+  if (o.fx) Object.assign(S.fx, o.fx); if (o.fmt) S.fmt = o.fmt; if (o.lang) S.lang = o.lang; if (o.bgMode) S.bgMode = o.bgMode; if (o.bgColor) S.bgColor = o.bgColor; if (o.bgFill) S.bgFill = o.bgFill; if (o.bgFillMode) S.bgFillMode = o.bgFillMode;
   if (o.cues) { S.cues = o.cues.map(c => ({ text: String(c.text ?? ''), start: c.start ?? null, end: c.end ?? null })); $('#lyrics').value = o.script ?? S.cues.map(c => c.text).join('\n'); }
   if (o.crop) Object.assign(S.crop, o.crop); if (o.bgT) S.bgT = { zoom: 1, dx: 0, dy: 0, ...o.bgT };
   if (RATIOS.some(r => r[0] === o.ratio)) setRatio(o.ratio); else rebuildBg();
