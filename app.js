@@ -28,7 +28,7 @@ const S = {
   sel: 'lyr',
   L: {
     lyr: { ax: .5, ay: 1, mx: 80, my: 120, size: 72, bw: .8, bh: .16, font: '', st: defStyle() },      // bw·bh = 자막 상자 폭·높이(화면 대비)
-    chr: { id: 'cat', ax: .5, ay: .5, mx: 80, my: 80, size: .62, blink: true, sens: 1, adj: {} },      // size = 캐릭터 키(화면 높이 대비), adj = 캐릭터별 입 위치·크기 조정
+    chr: { id: 'cat', ax: .5, ay: .5, mx: 80, my: 80, size: .62, blink: true, sens: 1, lipOff: 0, adj: {} },      // lipOff = 입 싱크 보정(초, +면 입이 늦게)      // size = 캐릭터 키(화면 높이 대비), adj = 캐릭터별 입 위치·크기 조정
   },
   fonts: [],           // { family, name }
   boxes: {},
@@ -144,8 +144,8 @@ function drawTable() {
   });
 }
 $('#addRow').onclick = () => { S.cues.push({ text: '', start: null, end: null }); drawTable(); };
-const shiftAll = d => { S.cues.forEach(c => { if (c.start != null) c.start = Math.max(0, c.start + d); if (c.end != null) c.end = Math.max(0, c.end + d); }); drawTable(); };
-$('#shiftM').onclick = () => shiftAll(-.1); $('#shiftP').onclick = () => shiftAll(.1);
+const shiftAll = d => { S.cues.forEach(c => { if (c.start != null) c.start = Math.max(0, +(c.start + d).toFixed(3)); if (c.end != null) c.end = Math.max(0, +(c.end + d).toFixed(3)); }); drawTable(); };
+$('#shiftM').onclick = () => shiftAll(-.1); $('#shiftP').onclick = () => shiftAll(.1); $('#shiftm').onclick = () => shiftAll(-.01); $('#shiftp').onclick = () => shiftAll(.01);
 
 function makeSrt(a = 0, b = Infinity) {      // a~b 구간만, 시각은 a를 0으로 삼아 내보낸다
   const rows = S.cues.map((c, i) => ({ s: c.start, e: c.start == null ? 0 : endOf(i), text: c.text })).filter(r => r.s != null && r.text)
@@ -292,7 +292,7 @@ function drawChar(g, t, edit) {
   const L = S.L.chr, c = CH[L.id]; if (!c) return null;
   const m = c.meta, h = Math.round(H * L.size), k = h / m.h, b = place(L, Math.round(m.w * k), h), A = L.adj[L.id] || {};
   g.imageSmoothingQuality = 'high'; g.drawImage(L.blink && !edit && blinking(t) ? c.closed : c.open, b.x, b.y, b.w, b.h);
-  let [o, s] = lipAt(t); o = clamp(o * L.sens, 0, 1); if (edit && S.sel === 'chr') [o, s] = [.6, 0];      // 멈춰서 캐릭터를 고칠 때는 입 자리가 보이게 벌려 둔다
+  let [o, s] = lipAt(t - (L.lipOff || 0)); o = clamp(o * L.sens, 0, 1); if (edit && S.sel === 'chr') [o, s] = [.6, 0];      // 멈춰서 캐릭터를 고칠 때는 입 자리가 보이게 벌려 둔다
   drawMouth(g, b.x + (m.mouth[0] + (A.dx || 0)) * k, b.y + (m.mouth[1] + (A.dy || 0)) * k, m.mw * k * (A.k ?? 1), o, s, m.ink);
   return b;
 }
@@ -472,6 +472,7 @@ function fitStage() {      // 좁은 화면에서는 미리보기가 위에 붙�
 function setRatio(name) {
   const r = RATIOS.find(x => x[0] === name); S.ratio = name; W = r[1]; H = r[2];
   for (const c of [cv, pv]) { c.width = W; c.height = H; } scratch = [mk(W, H), mk(W, H)]; rebuildBg(); fitStage();
+  const P = S.bgPreset; if (P?.theme && presetFile(P.side) !== P.f) usePreset(P.theme, P.side);      // 가로·세로가 바뀌면 그에 맞는 기본 배경으로
 }
 $('#fBg').onchange = async e => {
   const fs = [...e.target.files]; e.target.value = ''; if (!fs.length) return;
@@ -479,8 +480,23 @@ $('#fBg').onchange = async e => {
   stopVids(); S.bgVid = null;
   const f = fs[0];
   S.bgImg = S.bgSrc = await createImageBitmap(f); S.bgUp = 1; S.bgFile = f.name; S.bgT = { zoom: 1, dx: 0, dy: 0 }; rebuildBg();
-  S.bgMode = 'image'; $('#bgName').textContent = `${f.name} (${S.bgImg.width}x${S.bgImg.height})`; if (S.sel === 'bg') buildPanel();
+  S.bgMode = 'image'; S.bgPreset = null; $('#bgName').textContent = `${f.name} (${S.bgImg.width}x${S.bgImg.height})`; if (S.sel === 'bg') buildPanel();
 };
+
+/* ---------- 기본 배경: bg/list.txt 의 테마마다 세로형(_v, 자막 자리 위), 가로형(_l 자막 자리 왼쪽, _r 오른쪽) ---------- */
+readList('bg/list.txt').then(l => { S.bgThemes = l; if (step === 3 && S.sel === 'bg') buildPanel(); });
+const presetFile = side => H > W ? 'v' : side;      // 세로 화면이면 세로형, 아니면 고른 쪽 가로형
+async function usePreset(theme, side, keepLayout) {
+  const f = presetFile(side); let img;
+  try { img = await createImageBitmap(await (await fetch(`bg/${theme}_${f}.webp`)).blob()); } catch { return alert('기본 배경을 불러오지 못했습니다.'); }
+  stopVids(); S.bgVid = null; S.bgImg = S.bgSrc = img; S.bgUp = 1; S.bgFile = theme; S.bgT = { zoom: 1, dx: 0, dy: 0 }; S.bgMode = 'image'; S.bgPreset = { theme, side, f }; rebuildBg();
+  if (!keepLayout) {      // 자막과 캐릭터를 그림의 빈 자리에 맞춰 놓는다(그다음 자유롭게 옮길 수 있다)
+    const Ly = S.L.lyr, C = S.L.chr, l = side === 'l';
+    if (f === 'v') { Object.assign(Ly, { ax: .5, ay: 0, my: Math.round(H * .08), bw: .84, bh: .2 }); Object.assign(C, { ax: .5, ay: 1, my: Math.round(H * .06), size: .4 }); }
+    else { Object.assign(Ly, { ax: l ? 0 : 1, ay: .5, mx: Math.round(W * .05), bw: .42, bh: .5 }); Object.assign(C, { ax: l ? 1 : 0, ay: 1, mx: Math.round(W * .1), my: Math.round(H * .06), size: .62 }); }
+  }
+  $('#bgName').textContent = `기본 배경: ${S.bgThemes?.find(x => x.file === theme)?.name || theme}`; if (step === 3) buildPanel();
+}
 
 /* ---------- 배경 영상: 10초 이하 루프 영상 1~2개를 이어 붙여 반복. 노래 0초 = 영상 0초 ---------- */
 const VID_MAX = 10;
@@ -496,7 +512,7 @@ async function loadBgVideos(fs) {
   const v0 = clips[0].el; if (v0.currentTime > 0) { v0.currentTime = 0; await new Promise(r => v0.onseeked = r); }
   stopVids(); S.bgVid = { clips, total: clips.reduce((s, c) => s + c.dur, 0) }; S.vidImg = null;
   S.bgImg = S.bgSrc = await createImageBitmap(v0); S.bgUp = 1; S.bgFile = clips[0].file.name; S.bgT = { zoom: 1, dx: 0, dy: 0 }; rebuildBg();      // 첫 영상의 첫 장면: 위치 맞추기와 흐린 채우기에 쓴다
-  S.bgMode = 'image'; $('#bgName').textContent = clips.map(c => `${c.file.name} (${c.w}x${c.h}, ${c.dur.toFixed(1)}초)`).join(' + '); if (S.sel === 'bg') buildPanel();
+  S.bgMode = 'image'; S.bgPreset = null; $('#bgName').textContent = clips.map(c => `${c.file.name} (${c.w}x${c.h}, ${c.dur.toFixed(1)}초)`).join(' + '); if (S.sel === 'bg') buildPanel();
 }
 function stopVids() { S.bgVid?.clips.forEach(c => { c.el.pause(); URL.revokeObjectURL(c.el.src); }); }
 const clipAt = t => { const V = S.bgVid; let x = ((t % V.total) + V.total) % V.total; return x < V.clips[0].dur || V.clips.length < 2 ? [0, Math.min(x, V.clips[0].dur)] : [1, x - V.clips[0].dur]; };
@@ -555,7 +571,14 @@ function buildPanel() {
     P.append(el('p', { className: 'hint', textContent: `지금 ${W}x${H}. 짧은 변이 1440이 되도록 맞춥니다.` }), head('배경'),
       row('종류', ...[['image', '이미지'], ['color', '단색']].map(([v, t]) => { const b = el('button', { className: 'seg' + (S.bgMode === v ? ' on' : ''), textContent: t }); b.onclick = () => { S.bgMode = v; buildPanel(); }; return b; })));
     if (S.bgMode === 'color') { P.append(row('색', colorBtn(() => S.bgColor, v => S.bgColor = v))); return; }
-    if (!S.bgImg) { P.append(el('p', { className: 'hint', textContent: '화면 아래에서 배경 이미지를 넣으세요.' })); return; }
+    if (S.bgThemes?.length) {
+      const tall = H > W, side = S.bgPreset?.side || 'l', grid = el('div', { className: 'chars' });
+      for (const t of S.bgThemes) grid.append(el('button', { className: S.bgPreset?.theme === t.file ? 'on' : '', onclick: () => usePreset(t.file, side) }, el('img', { src: `bg/${t.file}_${tall ? 'v' : side}.webp`, alt: t.name, loading: 'lazy' }), t.name));
+      P.append(head('기본 배경'), grid);
+      if (!tall) P.append(row('자막 자리', ...[['l', '왼쪽'], ['r', '오른쪽']].map(([v, t]) => { const b = el('button', { className: 'seg' + (side === v ? ' on' : ''), textContent: t }); b.onclick = () => S.bgPreset ? usePreset(S.bgPreset.theme, v) : (S.bgPreset = { side: v }, buildPanel()); return b; })));
+      P.append(el('p', { className: 'hint', textContent: '기본 배경을 고르면 자막과 캐릭터를 그림의 빈 자리에 맞춰 놓습니다. 세로 화면은 자막 자리가 위입니다.' }), head('배경 이미지'));
+    }
+    if (!S.bgImg) { P.append(el('p', { className: 'hint', textContent: '기본 배경을 고르거나, 화면 아래에서 배경 이미지를 넣으세요.' })); return; }
     const T = S.bgT, bmp = S.bgImg, cover = Math.max(W / bmp.width, H / bmp.height);
     const fits = [['가로 맞춤', W / bmp.width / cover], ['세로 맞춤', H / bmp.height / cover], ['원본 크기', 1 / cover / (S.bgUp || 1)]];
     const z = el('input', { type: 'range', min: .1, max: 5, step: .001, value: T.zoom }), zp = el('input', { type: 'number', min: 10, max: 500, step: 1, value: Math.round(T.zoom * 100) }), zn = el('span', { className: 'hint' });
@@ -603,8 +626,8 @@ function buildPanel() {
     const step1 = (key, d) => el('button', { className: 'mini', innerHTML: ICON[d], onclick: () => { A[key] += (d === 'left' || d === 'up') ? -1 : 1; buildPanel(); } });
     const kp = el('input', { type: 'range', min: 50, max: 200, step: 1, value: Math.round(A.k * 100) }); kp.oninput = () => A.k = +kp.value / 100;
     P.append(head('입'), row('가로', num(A, 'dx', -200, 200), step1('dx', 'left'), step1('dx', 'right')), row('세로', num(A, 'dy', -200, 200), step1('dy', 'up'), step1('dy', 'down')),
-      row('크기', kp), row('벌림', range(L, 'sens', .4, 2.5, .05)),
-      el('p', { className: 'hint', textContent: '멈춰 있을 때는 입을 벌린 모양으로 보여 줍니다. 가로·세로는 원본 그림의 픽셀 단위, 벌림은 소리에 입이 얼마나 크게 반응할지입니다.' }),
+      row('크기', kp), row('벌림', range(L, 'sens', .4, 2.5, .05)), row('입 싱크', num(L, 'lipOff', -2, 2, .01), el('span', { className: 'hint', textContent: '초' }), ...[-.01, .01].map(d => el('button', { className: 'mini wide', textContent: (d > 0 ? '+' : '−') + '0.01', onclick: () => { L.lipOff = +clamp((L.lipOff || 0) + d, -2, 2).toFixed(2); buildPanel(); } }))),
+      el('p', { className: 'hint', textContent: '멈춰 있을 때는 입을 벌린 모양으로 보여 줍니다. 가로·세로는 원본 그림의 픽셀 단위, 벌림은 소리에 입이 얼마나 크게 반응할지입니다. 입 싱크는 입이 소리보다 빠르면 +, 늦으면 −로 맞춥니다.' }),
       row('', el('button', { className: 'mini wide', textContent: '입 처음 상태로', onclick: () => { L.adj[L.id] = { dx: 0, dy: 0, k: 1 }; buildPanel(); } })));
     return;
   }
@@ -867,7 +890,7 @@ const STYLE_KEY = 'lipsync-style';
 function collect(full) {      // full=true 는 작업 전체(대본·시점 포함), false 는 꾸밈만(내 스타일)
   const L = JSON.parse(JSON.stringify(S.L));
   L.lyr.font = S.fonts.find(f => f.family === S.L.lyr.font)?.name ?? S.wantFont?.lyr ?? '';
-  const o = { app: 'lipsync', v: 1, ratio: S.ratio, fmt: S.fmt, lang: S.lang, bgMode: S.bgMode, bgColor: S.bgColor, bgFill: S.bgFill, bgFillMode: S.bgFillMode, fx: { ...S.fx }, L };
+  const o = { app: 'lipsync', v: 1, ratio: S.ratio, fmt: S.fmt, lang: S.lang, bgMode: S.bgMode, bgPreset: S.bgPreset?.theme ? { theme: S.bgPreset.theme, side: S.bgPreset.side } : null, bgColor: S.bgColor, bgFill: S.bgFill, bgFillMode: S.bgFillMode, fx: { ...S.fx }, L };
   if (!full) return o;
   return { ...o, script: $('#lyrics').value, cues: S.cues, crop: { ...S.crop }, bgT: { ...S.bgT } };
 }
@@ -877,7 +900,7 @@ async function applyState(o) {
   if (o.L?.chr) Object.assign(S.L.chr, o.L.chr, { adj: { ...S.L.chr.adj, ...o.L.chr.adj } });
   S.wantFont = { lyr: o.L?.lyr?.font || '' };
   { const f = S.fonts.find(f => f.name === S.wantFont.lyr); if (f) S.L.lyr.font = f.family; }
-  if (o.fx) Object.assign(S.fx, o.fx); if (o.fmt) S.fmt = o.fmt; if (o.lang) S.lang = o.lang; if (o.bgMode) S.bgMode = o.bgMode; if (o.bgColor) S.bgColor = o.bgColor; if (o.bgFill) S.bgFill = o.bgFill; if (o.bgFillMode) S.bgFillMode = o.bgFillMode;
+  if (o.fx) Object.assign(S.fx, o.fx); if (o.fmt) S.fmt = o.fmt; if (o.lang) S.lang = o.lang; if (o.bgMode) S.bgMode = o.bgMode; if (o.bgPreset?.theme && !S.bgImg) usePreset(o.bgPreset.theme, o.bgPreset.side, true); if (o.bgColor) S.bgColor = o.bgColor; if (o.bgFill) S.bgFill = o.bgFill; if (o.bgFillMode) S.bgFillMode = o.bgFillMode;
   if (o.cues) { S.cues = o.cues.map(c => ({ text: String(c.text ?? ''), start: c.start ?? null, end: c.end ?? null })); $('#lyrics').value = o.script ?? S.cues.map(c => c.text).join('\n'); }
   if (o.crop) Object.assign(S.crop, o.crop); if (o.bgT) S.bgT = { zoom: 1, dx: 0, dy: 0, ...o.bgT };
   if (RATIOS.some(r => r[0] === o.ratio)) setRatio(o.ratio); else rebuildBg();
